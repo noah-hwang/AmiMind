@@ -1,0 +1,6 @@
+{
+  "name": "AmiMind",
+  "description": "A modern Retrieval-Augmented Generation (RAG) system supporting multi-document upload, vector database search optimization, hierarchical layered design, and seamless Q&A powered by 智脑 API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

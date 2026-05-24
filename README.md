@@ -1,4 +1,14 @@
-# MD5
+---
+title: AmiMind
+emoji: 🧠
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
+# AmiMind
 
 ## 🌟 项目简介
 
