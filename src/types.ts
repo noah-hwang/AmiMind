@@ -58,6 +58,14 @@ export interface ModelMappingItem {
   support1M: boolean;
 }
 
+export interface AdminUser {
+  email: string;
+  docCount: number;
+  chunkCount: number;
+  messageCount: number;
+  lastActive: string | null;
+}
+
 export interface LLMConfig {
   BASE_URL: string;
   API_KEY: string;

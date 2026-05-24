@@ -353,6 +353,64 @@ async function startServer() {
     }
   });
 
+  // === Admin APIs ===
+
+  function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+    if ((req.headers['x-user-email'] as string) !== 'admin@amimind.com') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    next();
+  }
+
+  app.get('/api/admin/users', requireAdmin, (req, res) => {
+    try {
+      const storeDir = path.join(process.cwd(), 'db_stores');
+      if (!fs.existsSync(storeDir)) return res.json({ users: [] });
+      const files = fs.readdirSync(storeDir).filter(f => f.startsWith('store_') && f.endsWith('.json'));
+      const users = files.map(file => {
+        const encoded = file.slice('store_'.length, -'.json'.length);
+        const email = decodeURIComponent(encoded);
+        const docs = vectorStore.getDocuments(email);
+        const chunks = vectorStore.getChunks(email);
+        const messages = vectorStore.getMessages(email);
+        const timestamps = [
+          ...docs.map(d => d.uploadDate),
+          ...messages.map(m => m.timestamp),
+        ].filter(Boolean).sort();
+        return {
+          email,
+          docCount: docs.length,
+          chunkCount: chunks.length,
+          messageCount: messages.length,
+          lastActive: timestamps.length ? timestamps[timestamps.length - 1] : null,
+        };
+      });
+      res.json({ users });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Failed to list users' });
+    }
+  });
+
+  app.get('/api/admin/users/:encodedEmail/documents', requireAdmin, (req, res) => {
+    try {
+      const email = decodeURIComponent(req.params.encodedEmail);
+      const docs = vectorStore.getDocuments(email);
+      res.json({ documents: docs });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Failed to get documents' });
+    }
+  });
+
+  app.get('/api/admin/users/:encodedEmail/messages', requireAdmin, (req, res) => {
+    try {
+      const email = decodeURIComponent(req.params.encodedEmail);
+      const messages = vectorStore.getMessages(email);
+      res.json({ messages });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || 'Failed to get messages' });
+    }
+  });
+
   // === Front-End Hosting integration ===
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

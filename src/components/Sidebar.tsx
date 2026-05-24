@@ -1,13 +1,13 @@
 import React from 'react';
-import { Database, FileText, Cpu, Shield, Trash2, Layers, RefreshCw, Settings, Brain, Sparkles } from 'lucide-react';
+import { Database, FileText, Cpu, Shield, Trash2, Layers, RefreshCw, Settings, Brain, Sparkles, LayoutDashboard } from 'lucide-react';
 import { SystemStats } from '../types';
 
 interface SidebarProps {
   stats: SystemStats | null;
   onReset: () => void;
   loadingReset: boolean;
-  activeTab: 'portal' | 'rag' | 'docs' | 'config';
-  setActiveTab: (tab: 'portal' | 'rag' | 'docs' | 'config') => void;
+  activeTab: 'portal' | 'rag' | 'docs' | 'config' | 'admin';
+  setActiveTab: (tab: 'portal' | 'rag' | 'docs' | 'config' | 'admin') => void;
   currentUser: string | null;
   onAuthTrigger: () => void;
 }
@@ -21,10 +21,9 @@ export default function Sidebar({
   currentUser,
   onAuthTrigger,
 }: SidebarProps) {
-  // Let's compute a dynamic usage score for visuals
   const documentChunks = stats?.chunksCount || 0;
 
-  const handleTabClick = (tab: 'portal' | 'rag' | 'docs' | 'config') => {
+  const handleTabClick = (tab: 'portal' | 'rag' | 'docs' | 'config' | 'admin') => {
     if (tab !== 'portal' && !currentUser) {
       alert('请登录免费使用');
       onAuthTrigger();
@@ -120,6 +119,21 @@ export default function Sidebar({
               >
                 <Settings size={15} className={`${activeTab === 'config' ? 'text-indigo-600' : 'text-slate-400'}`} />
                 <span>大模型与供应商配置</span>
+              </button>
+            )}
+
+            {currentUser === 'admin@amimind.com' && (
+              <button
+                onClick={() => handleTabClick('admin')}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                  activeTab === 'admin'
+                    ? 'bg-indigo-50/70 text-indigo-600 border border-indigo-100/70 shadow-sm'
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-950'
+                }`}
+                id="tab-admin"
+              >
+                <LayoutDashboard size={15} className={`${activeTab === 'admin' ? 'text-indigo-600' : 'text-slate-400'}`} />
+                <span>管理后台</span>
               </button>
             )}
           </div>

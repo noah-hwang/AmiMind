@@ -35,6 +35,7 @@ import {
 import Sidebar from './components/Sidebar';
 import LlmConfigManager from './components/LlmConfigManager';
 import InteractiveSimulator from './components/InteractiveSimulator';
+import AdminPanel from './components/AdminPanel';
 import { Document, ChatMessage, SystemStats } from './types';
 
 // Concrete Sample Documents to let users run testing immediately without finding their own files
@@ -152,7 +153,7 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<'portal' | 'rag' | 'docs' | 'config'>('portal');
+  const [activeTab, setActiveTab] = useState<'portal' | 'rag' | 'docs' | 'config' | 'admin'>('portal');
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [showTemplates, setShowTemplates] = useState(true);
@@ -1746,13 +1747,18 @@ CMD ["node", "dist/server.cjs"]`;
 
           {/* TAB 3: LLM PROVIDER CONFIGURATION */}
           <div className={`h-full ${activeTab === 'config' ? 'block' : 'hidden'}`} id="config-panel">
-            <LlmConfigManager 
+            <LlmConfigManager
               onBack={() => setActiveTab('rag')}
               showNotification={showNotification}
               onConfigSaved={() => {
                 fetchStats();
               }}
             />
+          </div>
+
+          {/* TAB 4: ADMIN PANEL */}
+          <div className={`h-full ${activeTab === 'admin' ? 'block' : 'hidden'}`} id="admin-panel">
+            <AdminPanel currentUser={currentUser} />
           </div>
 
         </main>
