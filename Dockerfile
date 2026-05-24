@@ -21,18 +21,15 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-# HF Spaces runs containers as UID 1000
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup --uid 1000
-
 COPY package*.json ./
 RUN npm ci --omit=dev
 
 COPY --from=builder /app/dist ./dist
 
-# Writable directory for JSON vector store
-RUN mkdir -p db_stores && chown -R appuser:appgroup /app
+# Writable directory for JSON vector store (use built-in 'node' user, UID 1000)
+RUN mkdir -p db_stores && chown -R node:node /app
 
-USER appuser
+USER node
 
 EXPOSE 7860
 
