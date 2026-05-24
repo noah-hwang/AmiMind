@@ -1,186 +1,186 @@
-import fs from 'fs';
-import path from 'path';
+import { Pool } from 'pg';
 import { Document, DocumentChunk, Citation, ChatMessage } from '../src/types';
 
-interface PersistedStore {
-  documents: Document[];
-  chunks: DocumentChunk[];
-  messages: ChatMessage[];
-}
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
 
 export class VectorStore {
-  private getStorePath(userEmail: string): string {
-    const sanitized = encodeURIComponent(userEmail || 'anonymous').replace(/[*"\/\\<>:|?]/g, '_');
-    const dir = path.join(process.cwd(), 'db_stores');
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    return path.join(dir, `store_${sanitized}.json`);
+  async initSchema() {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS documents (
+        id          TEXT PRIMARY KEY,
+        user_email  TEXT NOT NULL,
+        name        TEXT NOT NULL,
+        type        TEXT NOT NULL,
+        size        INTEGER NOT NULL,
+        upload_date TEXT NOT NULL,
+        chunk_count INTEGER NOT NULL,
+        word_count  INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS chunks (
+        id          TEXT PRIMARY KEY,
+        doc_id      TEXT NOT NULL,
+        user_email  TEXT NOT NULL,
+        doc_name    TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        embedding   TEXT,
+        token_count INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS messages (
+        id         TEXT PRIMARY KEY,
+        user_email TEXT NOT NULL,
+        role       TEXT NOT NULL,
+        content    TEXT NOT NULL,
+        timestamp  TEXT NOT NULL,
+        citations  TEXT
+      );
+    `);
+    console.log('[VectorStore] PostgreSQL schema ready.');
   }
 
-  private loadStore(userEmail: string): PersistedStore {
-    const storePath = this.getStorePath(userEmail);
-    try {
-      if (fs.existsSync(storePath)) {
-        const fileContent = fs.readFileSync(storePath, 'utf-8');
-        const data = JSON.parse(fileContent);
-        const storeObj = {
-          documents: data.documents || [],
-          chunks: data.chunks || [],
-          messages: data.messages || [],
-        };
+  async getDocuments(userEmail: string): Promise<Document[]> {
+    const { rows } = await pool.query(
+      `SELECT id, name, type, size,
+              upload_date AS "uploadDate",
+              chunk_count AS "chunkCount",
+              word_count  AS "wordCount"
+       FROM documents WHERE user_email=$1 ORDER BY upload_date DESC`,
+      [userEmail]
+    );
+    return rows;
+  }
 
-        // Seed template data if documents list is empty
-        if (storeObj.documents.length === 0) {
-          const templatePath = path.join(process.cwd(), 'db_store.json');
-          if (fs.existsSync(templatePath)) {
-            console.log(`[VectorStore] Seeding empty store back to template data for user: ${userEmail}`);
-            const templateContent = fs.readFileSync(templatePath, 'utf-8');
-            const templateData = JSON.parse(templateContent);
-            storeObj.documents = templateData.documents || [];
-            storeObj.chunks = templateData.chunks || [];
-            fs.writeFileSync(storePath, JSON.stringify(storeObj, null, 2), 'utf-8');
-          }
-        }
-        return storeObj;
-      } else {
-        // Create store and seed from db_store.json
-        const templatePath = path.join(process.cwd(), 'db_store.json');
-        if (fs.existsSync(templatePath)) {
-          console.log(`[VectorStore] Seeding default template db_store.json to user store: ${userEmail}`);
-          const fileContent = fs.readFileSync(templatePath, 'utf-8');
-          const data = JSON.parse(fileContent);
-          const seedStore = {
-            documents: data.documents || [],
-            chunks: data.chunks || [],
-            messages: [],
-          };
-          fs.writeFileSync(storePath, JSON.stringify(seedStore, null, 2), 'utf-8');
-          return seedStore;
-        }
+  async getChunks(userEmail: string): Promise<DocumentChunk[]> {
+    const { rows } = await pool.query(
+      `SELECT id, doc_id AS "docId", doc_name AS "docName",
+              content, embedding, token_count AS "tokenCount"
+       FROM chunks WHERE user_email=$1`,
+      [userEmail]
+    );
+    return rows.map(r => ({
+      ...r,
+      embedding: r.embedding ? JSON.parse(r.embedding) : undefined,
+    }));
+  }
+
+  async addDocument(userEmail: string, doc: Document, docChunks: DocumentChunk[]) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM chunks WHERE doc_id=$1 AND user_email=$2', [doc.id, userEmail]);
+      await client.query('DELETE FROM documents WHERE id=$1 AND user_email=$2', [doc.id, userEmail]);
+      await client.query(
+        `INSERT INTO documents (id, user_email, name, type, size, upload_date, chunk_count, word_count)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [doc.id, userEmail, doc.name, doc.type, doc.size, doc.uploadDate, doc.chunkCount, doc.wordCount]
+      );
+      for (const chunk of docChunks) {
+        await client.query(
+          `INSERT INTO chunks (id, doc_id, user_email, doc_name, content, embedding, token_count)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [
+            chunk.id, chunk.docId, userEmail, chunk.docName, chunk.content,
+            chunk.embedding ? JSON.stringify(chunk.embedding) : null,
+            chunk.tokenCount ?? null,
+          ]
+        );
       }
+      await client.query('COMMIT');
     } catch (e) {
-      console.error(`[VectorStore] Error loading store for ${userEmail}:`, e);
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
     }
-    return { documents: [], chunks: [], messages: [] };
   }
 
-  private saveStore(userEmail: string, data: PersistedStore) {
-    const storePath = this.getStorePath(userEmail);
+  async deleteDocument(userEmail: string, docId: string): Promise<boolean> {
+    const { rowCount } = await pool.query(
+      'DELETE FROM documents WHERE id=$1 AND user_email=$2',
+      [docId, userEmail]
+    );
+    await pool.query('DELETE FROM chunks WHERE doc_id=$1 AND user_email=$2', [docId, userEmail]);
+    return (rowCount ?? 0) > 0;
+  }
+
+  async clearAll(userEmail: string) {
+    await pool.query('DELETE FROM documents WHERE user_email=$1', [userEmail]);
+    await pool.query('DELETE FROM chunks    WHERE user_email=$1', [userEmail]);
+    await pool.query('DELETE FROM messages  WHERE user_email=$1', [userEmail]);
+  }
+
+  async getMessages(userEmail: string): Promise<ChatMessage[]> {
+    const { rows } = await pool.query(
+      'SELECT id, role, content, timestamp, citations FROM messages WHERE user_email=$1 ORDER BY timestamp',
+      [userEmail]
+    );
+    return rows.map(r => ({
+      ...r,
+      citations: r.citations ? JSON.parse(r.citations) : undefined,
+    }));
+  }
+
+  async saveMessages(userEmail: string, messages: ChatMessage[]) {
+    const client = await pool.connect();
     try {
-      fs.writeFileSync(storePath, JSON.stringify(data, null, 2), 'utf-8');
+      await client.query('BEGIN');
+      await client.query('DELETE FROM messages WHERE user_email=$1', [userEmail]);
+      for (const msg of messages) {
+        if (msg.loading) continue;
+        await client.query(
+          `INSERT INTO messages (id, user_email, role, content, timestamp, citations)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [msg.id, userEmail, msg.role, msg.content, msg.timestamp,
+           msg.citations ? JSON.stringify(msg.citations) : null]
+        );
+      }
+      await client.query('COMMIT');
     } catch (e) {
-      console.error(`[VectorStore] Error saving store for ${userEmail}:`, e);
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
     }
   }
 
-  public getDocuments(userEmail: string): Document[] {
-    return this.loadStore(userEmail).documents;
+  async getAllUsers(): Promise<string[]> {
+    const { rows } = await pool.query(`
+      SELECT DISTINCT user_email FROM documents
+      UNION
+      SELECT DISTINCT user_email FROM messages
+    `);
+    return rows.map(r => r.user_email);
   }
 
-  public getChunks(userEmail: string): DocumentChunk[] {
-    return this.loadStore(userEmail).chunks;
-  }
-
-  /**
-   * Insert a document entry and its chunks
-   */
-  public addDocument(userEmail: string, doc: Document, docChunks: DocumentChunk[]) {
-    const store = this.loadStore(userEmail);
-    
-    // Remove existing if any
-    store.documents = store.documents.filter((d) => d.id !== doc.id);
-    store.chunks = store.chunks.filter((c) => c.docId !== doc.id);
-
-    store.documents.push(doc);
-    store.chunks.push(...docChunks);
-    
-    this.saveStore(userEmail, store);
-  }
-
-  /**
-   * Delete document and relevant chunks
-   */
-  public deleteDocument(userEmail: string, docId: string): boolean {
-    const store = this.loadStore(userEmail);
-    const documentExists = store.documents.some((d) => d.id === docId);
-    if (!documentExists) return false;
-
-    store.documents = store.documents.filter((d) => d.id !== docId);
-    store.chunks = store.chunks.filter((c) => c.docId !== docId);
-    
-    this.saveStore(userEmail, store);
-    return true;
-  }
-
-  /**
-   * Purge the entire storage configuration
-   */
-  public clearAll(userEmail: string) {
-    const store = this.loadStore(userEmail);
-    store.documents = [];
-    store.chunks = [];
-    store.messages = [];
-    this.saveStore(userEmail, store);
-  }
-
-  /**
-   * Get messages for user
-   */
-  public getMessages(userEmail: string): ChatMessage[] {
-    return this.loadStore(userEmail).messages;
-  }
-
-  /**
-   * Save messages for user
-   */
-  public saveMessages(userEmail: string, messages: ChatMessage[]) {
-    const store = this.loadStore(userEmail);
-    store.messages = messages;
-    this.saveStore(userEmail, store);
-  }
-
-  /**
-   * Compute cosine similarity between two float vectors
-   */
   private cosineSimilarity(vecA: number[], vecB: number[]): number {
     if (vecA.length !== vecB.length) return 0;
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
+    let dot = 0, normA = 0, normB = 0;
     for (let i = 0; i < vecA.length; i++) {
-      dotProduct += vecA[i] * vecB[i];
+      dot += vecA[i] * vecB[i];
       normA += vecA[i] * vecA[i];
       normB += vecB[i] * vecB[i];
     }
     if (normA === 0 || normB === 0) return 0;
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
   }
 
-  /**
-   * Find query similarity across chunks with scores
-   */
-  public query(userEmail: string, queryEmbedding: number[], topK: number = 4): Citation[] {
-    const chunks = this.getChunks(userEmail);
+  async query(userEmail: string, queryEmbedding: number[], topK: number = 4): Promise<Citation[]> {
+    const chunks = await this.getChunks(userEmail);
     if (chunks.length === 0) return [];
-
-    const scoredChunks = chunks
-      .map((chunk) => {
-        if (!chunk.embedding) return { chunk, score: 0 };
-        const score = this.cosineSimilarity(queryEmbedding, chunk.embedding);
-        return { chunk, score };
-      })
-      .filter((item) => item.score > 0.1) // Lower-bound filter 
-      .sort((a, b) => b.score - a.score);
-
-    // Pick TopK
-    const results = scoredChunks.slice(0, topK);
-
-    return results.map((item) => ({
-      docName: item.chunk.docName,
-      chunkId: item.chunk.id,
-      score: item.score,
-      snippet: item.chunk.content,
-    }));
+    return chunks
+      .map(chunk => ({
+        chunk,
+        score: chunk.embedding ? this.cosineSimilarity(queryEmbedding, chunk.embedding) : 0,
+      }))
+      .filter(x => x.score > 0.1)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK)
+      .map(x => ({
+        docName: x.chunk.docName,
+        chunkId: x.chunk.id,
+        score: x.score,
+        snippet: x.chunk.content,
+      }));
   }
 }

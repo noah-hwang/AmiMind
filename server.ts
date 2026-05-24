@@ -58,6 +58,7 @@ async function startServer() {
   const geminiService = new GeminiService();
 
   console.log('[Backend] System layers initialized.');
+  await vectorStore.initSchema();
 
   // === LLM Provider Configuration APIs ===
 
@@ -160,11 +161,11 @@ async function startServer() {
   // === Presentation Layer REST APIs ===
 
   // 1. Fetch system statistics
-  app.get('/api/stats', (req, res) => {
+  app.get('/api/stats', async (req, res) => {
     try {
       const userEmail = (req.headers['x-user-email'] as string) || 'anonymous';
-      const documents = vectorStore.getDocuments(userEmail);
-      const chunks = vectorStore.getChunks(userEmail);
+      const documents = await vectorStore.getDocuments(userEmail);
+      const chunks = await vectorStore.getChunks(userEmail);
       const totalWords = documents.reduce((acc, curr) => acc + curr.wordCount, 0);
       
       const modelInfo = geminiService.getModelInfo();
@@ -184,10 +185,10 @@ async function startServer() {
   });
 
   // 2. Clear all document data from Vector Database
-  app.post('/api/reset', (req, res) => {
+  app.post('/api/reset', async (req, res) => {
     try {
       const userEmail = (req.headers['x-user-email'] as string) || 'anonymous';
-      vectorStore.clearAll(userEmail);
+      await vectorStore.clearAll(userEmail);
       res.json({ message: 'Vector database and documents cleared successfully.' });
     } catch (e: any) {
       res.status(500).json({ error: e.message || 'Failed to reset store' });
@@ -195,21 +196,21 @@ async function startServer() {
   });
 
   // 3. List uploaded documents
-  app.get('/api/documents', (req, res) => {
+  app.get('/api/documents', async (req, res) => {
     try {
       const userEmail = (req.headers['x-user-email'] as string) || 'anonymous';
-      res.json(vectorStore.getDocuments(userEmail));
+      res.json(await vectorStore.getDocuments(userEmail));
     } catch (e: any) {
       res.status(500).json({ error: e.message || 'Failed to retrieve documents list' });
     }
   });
 
   // 4. Delete specific document
-  app.delete('/api/documents/:id', (req, res) => {
+  app.delete('/api/documents/:id', async (req, res) => {
     try {
       const userEmail = (req.headers['x-user-email'] as string) || 'anonymous';
       const docId = req.params.id;
-      const success = vectorStore.deleteDocument(userEmail, docId);
+      const success = await vectorStore.deleteDocument(userEmail, docId);
       if (success) {
         res.json({ message: 'Document and vectorized index elements removed.' });
       } else {
@@ -275,7 +276,7 @@ async function startServer() {
         wordCount: wordCount,
       };
 
-      vectorStore.addDocument(userEmail, newDoc, successfullyEmbeddedChunks);
+      await vectorStore.addDocument(userEmail, newDoc, successfullyEmbeddedChunks);
       console.log(`[Backend] Document "${name}" vectorized and index store updated for ${userEmail}.`);
 
       res.status(201).json(newDoc);
@@ -305,7 +306,7 @@ async function startServer() {
       }
 
       // Part 2: Query Vector DB for matching context chunks
-      const topKMatches = vectorStore.query(userEmail, queryEmbedding, 4);
+      const topKMatches = await vectorStore.query(userEmail, queryEmbedding, 4);
       console.log(`[Backend] Vector query returned ${topKMatches.length} context matches.`);
 
       // Part 3: Formulate payload and request Gemini text summary output
@@ -328,10 +329,10 @@ async function startServer() {
   });
 
   // 7. Get messages (Q&A history) of specific user
-  app.get('/api/messages', (req, res) => {
+  app.get('/api/messages', async (req, res) => {
     try {
       const userEmail = (req.headers['x-user-email'] as string) || 'anonymous';
-      const messages = vectorStore.getMessages(userEmail);
+      const messages = await vectorStore.getMessages(userEmail);
       res.json({ messages });
     } catch (e: any) {
       res.status(500).json({ error: e.message || 'Failed to retrieve messages' });
@@ -339,14 +340,14 @@ async function startServer() {
   });
 
   // 8. Save messages (Q&A history) of specific user
-  app.post('/api/messages', (req, res) => {
+  app.post('/api/messages', async (req, res) => {
     try {
       const userEmail = (req.headers['x-user-email'] as string) || 'anonymous';
       const { messages } = req.body;
       if (!Array.isArray(messages)) {
         return res.status(400).json({ error: 'Invalid messages body' });
       }
-      vectorStore.saveMessages(userEmail, messages);
+      await vectorStore.saveMessages(userEmail, messages);
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message || 'Failed to save messages' });
@@ -362,17 +363,13 @@ async function startServer() {
     next();
   }
 
-  app.get('/api/admin/users', requireAdmin, (req, res) => {
+  app.get('/api/admin/users', requireAdmin, async (req, res) => {
     try {
-      const storeDir = path.join(process.cwd(), 'db_stores');
-      if (!fs.existsSync(storeDir)) return res.json({ users: [] });
-      const files = fs.readdirSync(storeDir).filter(f => f.startsWith('store_') && f.endsWith('.json'));
-      const users = files.map(file => {
-        const encoded = file.slice('store_'.length, -'.json'.length);
-        const email = decodeURIComponent(encoded);
-        const docs = vectorStore.getDocuments(email);
-        const chunks = vectorStore.getChunks(email);
-        const messages = vectorStore.getMessages(email);
+      const emails = await vectorStore.getAllUsers();
+      const users = await Promise.all(emails.map(async email => {
+        const docs = await vectorStore.getDocuments(email);
+        const chunks = await vectorStore.getChunks(email);
+        const messages = await vectorStore.getMessages(email);
         const timestamps = [
           ...docs.map(d => d.uploadDate),
           ...messages.map(m => m.timestamp),
@@ -384,27 +381,27 @@ async function startServer() {
           messageCount: messages.length,
           lastActive: timestamps.length ? timestamps[timestamps.length - 1] : null,
         };
-      });
+      }));
       res.json({ users });
     } catch (e: any) {
       res.status(500).json({ error: e.message || 'Failed to list users' });
     }
   });
 
-  app.get('/api/admin/users/:encodedEmail/documents', requireAdmin, (req, res) => {
+  app.get('/api/admin/users/:encodedEmail/documents', requireAdmin, async (req, res) => {
     try {
       const email = decodeURIComponent(req.params.encodedEmail);
-      const docs = vectorStore.getDocuments(email);
+      const docs = await vectorStore.getDocuments(email);
       res.json({ documents: docs });
     } catch (e: any) {
       res.status(500).json({ error: e.message || 'Failed to get documents' });
     }
   });
 
-  app.get('/api/admin/users/:encodedEmail/messages', requireAdmin, (req, res) => {
+  app.get('/api/admin/users/:encodedEmail/messages', requireAdmin, async (req, res) => {
     try {
       const email = decodeURIComponent(req.params.encodedEmail);
-      const messages = vectorStore.getMessages(email);
+      const messages = await vectorStore.getMessages(email);
       res.json({ messages });
     } catch (e: any) {
       res.status(500).json({ error: e.message || 'Failed to get messages' });
